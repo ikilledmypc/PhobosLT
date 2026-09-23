@@ -1,6 +1,7 @@
 #include "debug.h"
 #include "led.h"
 #include "webserver.h"
+#include "elrs_backpack.h"
 #include <ElegantOTA.h>
 
 static RX5808 rx(PIN_RX5808_RSSI, PIN_RX5808_DATA, PIN_RX5808_SELECT, PIN_RX5808_CLOCK);
@@ -10,6 +11,7 @@ static Buzzer buzzer;
 static Led led;
 static LapTimer timer;
 static BatteryMonitor monitor;
+static ElrsBackpack elrsBackpack;
 
 static TaskHandle_t xTimerTask = NULL;
 
@@ -22,6 +24,7 @@ static void parallelTask(void *pvArgs) {
         config.handleEeprom(currentTimeMs);
         rx.handleFrequencyChange(currentTimeMs, config.getFrequency());
         monitor.checkBatteryState(currentTimeMs, config.getAlarmThreshold());
+        elrsBackpack.update(currentTimeMs);
         buzzer.handleBuzzer(currentTimeMs);
         led.handleLed(currentTimeMs);
     }
@@ -41,6 +44,7 @@ void setup() {
     timer.init(&config, &rx, &buzzer, &led);
     monitor.init(PIN_VBAT, VBAT_SCALE, VBAT_ADD, &buzzer, &led);
     ws.init(&config, &timer, &monitor, &buzzer, &led);
+    elrsBackpack.init(&config);
     led.on(400);
     buzzer.beep(200);
     initParallelTask();

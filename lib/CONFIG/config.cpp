@@ -48,7 +48,7 @@ void Config::write(void) {
 
 void Config::toJson(AsyncResponseStream& destination) {
     // Use https://arduinojson.org/v6/assistant to estimate memory
-    DynamicJsonDocument config(256);
+    DynamicJsonDocument config(384);
     config["freq"] = conf.frequency;
     config["minLap"] = conf.minLap;
     config["alarm"] = conf.alarm;
@@ -59,11 +59,12 @@ void Config::toJson(AsyncResponseStream& destination) {
     config["name"] = conf.pilotName;
     config["ssid"] = conf.ssid;
     config["pwd"] = conf.password;
+    config["bindPhrase"] = conf.bindingPhrase;
     serializeJson(config, destination);
 }
 
 void Config::toJsonString(char* buf) {
-    DynamicJsonDocument config(256);
+    DynamicJsonDocument config(384);
     config["freq"] = conf.frequency;
     config["minLap"] = conf.minLap;
     config["alarm"] = conf.alarm;
@@ -74,13 +75,13 @@ void Config::toJsonString(char* buf) {
     config["name"] = conf.pilotName;
     config["ssid"] = conf.ssid;
     config["pwd"] = conf.password;
-    serializeJsonPretty(config, buf, 256);
+    config["bindPhrase"] = conf.bindingPhrase;
+    serializeJsonPretty(config, buf, 384);
 }
 
 void Config::fromJson(JsonObject source) {
     if (source["freq"] != conf.frequency) {
-        conf.frequency = source["freq"];
-        modified = true;
+        setFrequency(source["freq"]);
     }
     if (source["minLap"] != conf.minLap) {
         conf.minLap = source["minLap"];
@@ -118,10 +119,21 @@ void Config::fromJson(JsonObject source) {
         strlcpy(conf.password, source["pwd"] | "", sizeof(conf.password));
         modified = true;
     }
+    if (source["bindPhrase"] != conf.bindingPhrase) {
+        strlcpy(conf.bindingPhrase, source["bindPhrase"] | "", sizeof(conf.bindingPhrase));
+        modified = true;
+    }
 }
 
 uint16_t Config::getFrequency() {
     return conf.frequency;
+}
+
+void Config::setFrequency(uint16_t frequency) {
+    if (conf.frequency != frequency) {
+        conf.frequency = frequency;
+        modified = true;
+    }
 }
 
 uint32_t Config::getMinLapMs() {
@@ -148,6 +160,10 @@ char* Config::getPassword() {
     return conf.password;
 }
 
+char* Config::getBindingPhrase() {
+    return conf.bindingPhrase;
+}
+
 void Config::setDefaults(void) {
     DEBUG("Setting EEPROM defaults\n");
     // Reset everything to 0/false and then just set anything that zero is not appropriate
@@ -163,6 +179,7 @@ void Config::setDefaults(void) {
     strlcpy(conf.ssid, "", sizeof(conf.ssid));
     strlcpy(conf.password, "", sizeof(conf.password));
     strlcpy(conf.pilotName, "", sizeof(conf.pilotName));
+    strlcpy(conf.bindingPhrase, "", sizeof(conf.bindingPhrase));
     modified = true;
     write();
 }

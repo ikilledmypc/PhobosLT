@@ -1,3 +1,5 @@
+#pragma once
+
 #include <ArduinoJson.h>
 #include <AsyncJson.h>
 #include <stdint.h>
@@ -65,7 +67,7 @@
 #define EEPROM_RESERVED_SIZE 256
 #define CONFIG_MAGIC_MASK (0b11U << 30)
 #define CONFIG_MAGIC (0b01U << 30)
-#define CONFIG_VERSION 0U
+#define CONFIG_VERSION 1U
 
 #define EEPROM_CHECK_TIME_MS 1000
 
@@ -81,6 +83,7 @@ typedef struct {
     char pilotName[21];
     char ssid[33];
     char password[33];
+    char bindingPhrase[33];
 } laptimer_config_t;
 
 class Config {
@@ -95,12 +98,14 @@ class Config {
 
     // getters and setters
     uint16_t getFrequency();
+    void setFrequency(uint16_t frequency);
     uint32_t getMinLapMs();
     uint8_t getAlarmThreshold();
     uint8_t getEnterRssi();
     uint8_t getExitRssi();
     char* getSsid();
     char* getPassword();
+    char* getBindingPhrase();
 
    private:
     laptimer_config_t conf;

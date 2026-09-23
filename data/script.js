@@ -11,6 +11,7 @@ const exitRssiSpan = document.getElementById("exitSpan");
 const pilotNameInput = document.getElementById("pname");
 const ssidInput = document.getElementById("ssid");
 const pwdInput = document.getElementById("pwd");
+const bindPhraseInput = document.getElementById("bindPhrase");
 const minLapInput = document.getElementById("minLap");
 const alarmThreshold = document.getElementById("alarmThreshold");
 
@@ -80,6 +81,7 @@ onload = function (e) {
       pilotNameInput.value = config.name;
       ssidInput.value = config.ssid;
       pwdInput.value = config.pwd;
+      bindPhraseInput.value = config.bindPhrase;
       populateFreqOutput();
       stopRaceButton.disabled = true;
       startRaceButton.disabled = false;
@@ -259,6 +261,7 @@ function saveConfig() {
       name: pilotNameInput.value,
       ssid: ssidInput.value,
       pwd: pwdInput.value,
+      bindPhrase: bindPhraseInput.value,
     }),
   })
     .then((response) => response.json())

@@ -160,6 +160,7 @@ Below you can find all the config parameters and their description:
 
 **Announcer Rate** - controls the speed of the announcer reading the lap time.
 **Pilot Name** - when filled it will include pilot name when reading the times, e.g. `Pilot1 23.45`. It is useful when there is more than just one timer running at the same time. When practicing alone leave it empty.
+**ELRS Binding Phrase** - optional. When set to the same binding phrase used by your ExpressLRS backpack (radio/VTX), the timer will listen for VTX channel changes sent via ESP-NOW from the ExpressLRS Backpack (e.g. when using VTX Administrator on your radio) and automatically retune to match, updating and saving the Band/Channel setting just like a manual change would. Leave empty to disable and configure the Band/Channel manually as usual.
 
 **NOTE: Once configured make sure to save the configuration by clicking on the `Save Configuration` button, otherwise the changes will not take effect.**
 
