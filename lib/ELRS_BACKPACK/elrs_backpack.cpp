@@ -174,7 +174,8 @@ void ElrsBackpack::update(uint32_t currentTimeMs) {
     }
 
     if (lapTimer != nullptr && lapTimer->isLapAvailableForBackpack()) {
-        uint32_t lapTimeMs = lapTimer->getLapTimeForBackpack();
+        uint32_t lapTimeMs[3];
+        lapTimer->getLapTimeForBackpack(lapTimeMs);
         if (espNowActive && conf != nullptr && conf->getOsdEnabled()) {
             sendLapTime(lapTimeMs);
         }
@@ -275,43 +276,56 @@ void ElrsBackpack::sendOsdHeartbeat() {
     sendMspFrame(MSP_DISPLAYPORT, heartbeatPayload, sizeof(heartbeatPayload));
 }
 
-void ElrsBackpack::sendLapTime(uint32_t lapTimeMs) {
+void ElrsBackpack::sendLapTime(uint32_t lapTimeMs[3]) {
     if (!espNowActive) return;
     if (conf == nullptr || !conf->getOsdEnabled()) return;
 
     uint8_t row = conf->getOsdRow();
     uint8_t col = conf->getOsdCol();
 
-    char text[16];
-    uint32_t totalMs = lapTimeMs;
-    uint32_t minutes = totalMs / 60000;
-    uint32_t seconds = (totalMs / 1000) % 60;
-    uint32_t millisPart = totalMs % 1000;
-
-    if (minutes > 0) {
-        snprintf(text, sizeof(text), "%lu:%02lu.%03lu", (unsigned long)minutes,
-                 (unsigned long)seconds, (unsigned long)millisPart);
-    } else {
-        snprintf(text, sizeof(text), "%lu.%03lu", (unsigned long)seconds, (unsigned long)millisPart);
-    }
-
     // Clear the display region.
     uint8_t clearPayload[1] = {MSP_DISPLAYPORT_SUBCMD_CLEAR};
     sendMspFrame(MSP_DISPLAYPORT, clearPayload, sizeof(clearPayload));
 
-    // Write the lap time string.
-    size_t textLen = strlen(text);
-    uint8_t writePayload[4 + 16] = {0};
-    writePayload[0] = MSP_DISPLAYPORT_SUBCMD_WRITE_STRING;
-    writePayload[1] = row;
-    writePayload[2] = col;
-    writePayload[3] = LAPTIME_OSD_ATTR;
-    memcpy(&writePayload[4], text, textLen);
-    sendMspFrame(MSP_DISPLAYPORT, writePayload, 4 + textLen);
+    for( uint32_t time, i = 0; i < 4; i++) {
+        char text[16];
+        uint32_t totalMs = 0;
+
+        if(i > 2) {
+            for(uint_fast32_t j = 0; j< 3; j++){
+                totalMs += lapTimeMs[j];
+            } 
+        } else {
+            totalMs = lapTimeMs[i];
+        }
+         
+        uint32_t minutes = totalMs / 60000;
+        uint32_t seconds = (totalMs / 1000) % 60;
+        uint32_t millisPart = totalMs % 1000;
+
+        if (minutes > 0) {
+            snprintf(text, sizeof(text), "%lu:%02lu.%03lu", (unsigned long)minutes,
+                    (unsigned long)seconds, (unsigned long)millisPart);
+        } else {
+            snprintf(text, sizeof(text), "%lu.%03lu", (unsigned long)seconds, (unsigned long)millisPart);
+        }
+
+ 
+
+        // Write the lap time string.
+        size_t textLen = strlen(text);
+        uint8_t writePayload[4 + 16] = {0};
+        writePayload[0] = MSP_DISPLAYPORT_SUBCMD_WRITE_STRING;
+        writePayload[1] = row + i;
+        writePayload[2] = col;
+        writePayload[3] = LAPTIME_OSD_ATTR;
+        memcpy(&writePayload[4], text, textLen);
+        sendMspFrame(MSP_DISPLAYPORT, writePayload, 4 + textLen);
+    }
 
     // Commit/draw the screen.
     uint8_t drawPayload[1] = {MSP_DISPLAYPORT_SUBCMD_DRAW_SCREEN};
     sendMspFrame(MSP_DISPLAYPORT, drawPayload, sizeof(drawPayload));
 
-    DEBUG("ElrsBackpack: sent lap time OSD message: %s\n", text);
+    // DEBUG("ElrsBackpack: sent lap time OSD message: %s\n", text);
 }

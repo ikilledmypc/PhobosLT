@@ -22,7 +22,7 @@ class ElrsBackpack {
 
     // Builds and sends MSP_DISPLAYPORT frames to show the given lap time
     // (milliseconds) on a bound HDZero goggle's OSD via the ELRS Backpack.
-    void sendLapTime(uint32_t lapTimeMs);
+    void sendLapTime(uint32_t lapTimeMs[3]);
 
    private:
     Config *conf = nullptr;

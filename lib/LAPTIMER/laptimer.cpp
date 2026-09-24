@@ -125,6 +125,13 @@ static uint32_t lastLapTimeValue(uint8_t lapCount, uint32_t *lapTimes) {
     return lapTimes[lapCount - 1];
 }
 
+static void lastThreeLapTimeValues(uint8_t lapCount, uint32_t *lapTimes, uint32_t out[3]) {
+    for (uint8_t i = 0; i < 3; i++) {
+        uint8_t idx = (lapCount + LAPTIMER_LAP_HISTORY - 1 - i) % LAPTIMER_LAP_HISTORY;
+        out[i] = lapTimes[idx];
+    }
+}
+
 uint32_t LapTimer::getLapTime() {
     lapAvailable = false;
     return lastLapTimeValue(lapCount, lapTimes);
@@ -134,9 +141,9 @@ bool LapTimer::isLapAvailable() {
     return lapAvailable;
 }
 
-uint32_t LapTimer::getLapTimeForBackpack() {
+void LapTimer::getLapTimeForBackpack(uint32_t lapTimes_out[3]) {
     lapAvailableForBackpack = false;
-    return lastLapTimeValue(lapCount, lapTimes);
+    lastThreeLapTimeValues(lapCount, lapTimes, lapTimes_out);
 }
 
 bool LapTimer::isLapAvailableForBackpack() {
