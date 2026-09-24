@@ -60,6 +60,9 @@ void Config::toJson(AsyncResponseStream& destination) {
     config["ssid"] = conf.ssid;
     config["pwd"] = conf.password;
     config["bindPhrase"] = conf.bindingPhrase;
+    config["osdEnabled"] = conf.osdEnabled;
+    config["osdRow"] = conf.osdRow;
+    config["osdCol"] = conf.osdCol;
     serializeJson(config, destination);
 }
 
@@ -76,6 +79,9 @@ void Config::toJsonString(char* buf) {
     config["ssid"] = conf.ssid;
     config["pwd"] = conf.password;
     config["bindPhrase"] = conf.bindingPhrase;
+    config["osdEnabled"] = conf.osdEnabled;
+    config["osdRow"] = conf.osdRow;
+    config["osdCol"] = conf.osdCol;
     serializeJsonPretty(config, buf, 384);
 }
 
@@ -123,6 +129,18 @@ void Config::fromJson(JsonObject source) {
         strlcpy(conf.bindingPhrase, source["bindPhrase"] | "", sizeof(conf.bindingPhrase));
         modified = true;
     }
+    if (source["osdEnabled"] != conf.osdEnabled) {
+        conf.osdEnabled = source["osdEnabled"];
+        modified = true;
+    }
+    if (source["osdRow"] != conf.osdRow) {
+        conf.osdRow = source["osdRow"];
+        modified = true;
+    }
+    if (source["osdCol"] != conf.osdCol) {
+        conf.osdCol = source["osdCol"];
+        modified = true;
+    }
 }
 
 uint16_t Config::getFrequency() {
@@ -164,6 +182,18 @@ char* Config::getBindingPhrase() {
     return conf.bindingPhrase;
 }
 
+bool Config::getOsdEnabled() {
+    return conf.osdEnabled != 0;
+}
+
+uint8_t Config::getOsdRow() {
+    return conf.osdRow;
+}
+
+uint8_t Config::getOsdCol() {
+    return conf.osdCol;
+}
+
 void Config::setDefaults(void) {
     DEBUG("Setting EEPROM defaults\n");
     // Reset everything to 0/false and then just set anything that zero is not appropriate
@@ -180,6 +210,9 @@ void Config::setDefaults(void) {
     strlcpy(conf.password, "", sizeof(conf.password));
     strlcpy(conf.pilotName, "", sizeof(conf.pilotName));
     strlcpy(conf.bindingPhrase, "", sizeof(conf.bindingPhrase));
+    conf.osdEnabled = 1;
+    conf.osdRow = 1;
+    conf.osdCol = 2;
     modified = true;
     write();
 }

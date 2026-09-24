@@ -14,6 +14,25 @@
 #define MSP_SET_VTX_CONFIG 89
 #define MSP_VTX_CHANNEL_COUNT 48
 
+// MSP DisplayPort function used to draw text on a bound HDZero goggle's OSD
+// via the ELRS Backpack. Sub-command is payload byte 0.
+#define MSP_DISPLAYPORT 182
+#define MSP_DISPLAYPORT_SUBCMD_HEARTBEAT 0
+#define MSP_DISPLAYPORT_SUBCMD_RELEASE 1
+#define MSP_DISPLAYPORT_SUBCMD_CLEAR 2
+#define MSP_DISPLAYPORT_SUBCMD_WRITE_STRING 3
+#define MSP_DISPLAYPORT_SUBCMD_DRAW_SCREEN 4
+
+// How often (ms) to send an MSP DisplayPort heartbeat to keep the OSD
+// "session" open on the goggles. Betaflight-style DisplayPort receivers
+// (including the HDZero VRX) revert to normal video and stop accepting
+// write/draw commands if no heartbeat is received for a short timeout.
+#define OSD_HEARTBEAT_INTERVAL_MS 250
+
+// Default OSD position for the lap time text (row/col in character cells),
+// used only if Config does not provide a value (should not normally happen).
+#define LAPTIME_OSD_ATTR 0
+
 // Standard 48 channel frequency table, matching the frequency table used by
 // the ExpressLRS Backpack RX5808 module, so that channel indices received
 // over ESP-NOW line up with the frequencies we tune to.
@@ -48,8 +67,9 @@ static void onEspNowDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
     }
 }
 
-void ElrsBackpack::init(Config *config) {
+void ElrsBackpack::init(Config *config, LapTimer *lap) {
     conf = config;
+    lapTimer = lap;
     instance = this;
 }
 
@@ -86,6 +106,7 @@ bool ElrsBackpack::setupEspNow() {
     }
 
     wifi_interface_t iface = (mode == WIFI_STA) ? WIFI_IF_STA : WIFI_IF_AP;
+    espNowIface = iface;
 
     if (esp_wifi_set_mac(iface, uid) != ESP_OK) {
         DEBUG("ElrsBackpack: failed to set soft MAC address\n");
@@ -99,8 +120,29 @@ bool ElrsBackpack::setupEspNow() {
 
     esp_now_register_recv_cb(onEspNowDataRecv);
 
-    DEBUG("ElrsBackpack: ESP-NOW active, UID = %02x:%02x:%02x:%02x:%02x:%02x\n",
-          uid[0], uid[1], uid[2], uid[3], uid[4], uid[5]);
+    DEBUG("ElrsBackpack: ESP-NOW active, UID = %02x:%02x:%02x:%02x:%02x:%02x, wifi mode = %d, channel = %d\n",
+          uid[0], uid[1], uid[2], uid[3], uid[4], uid[5], (int)mode, (int)WiFi.channel());
+
+    peerAdded = false;
+
+    return true;
+}
+
+bool ElrsBackpack::addPeer() {
+    if (esp_now_is_peer_exist(uid)) {
+        return true;
+    }
+
+    esp_now_peer_info_t peerInfo = {};
+    memcpy(peerInfo.peer_addr, uid, sizeof(uid));
+    peerInfo.channel = 0;  // Use current WiFi channel.
+    peerInfo.ifidx = espNowIface;
+    peerInfo.encrypt = false;
+
+    if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+        DEBUG("ElrsBackpack: failed to add ESP-NOW peer\n");
+        return false;
+    }
 
     return true;
 }
@@ -129,6 +171,19 @@ void ElrsBackpack::update(uint32_t currentTimeMs) {
     if (pendingChannelValid) {
         pendingChannelValid = false;
         applyChannelIndex(pendingChannelIndex);
+    }
+
+    if (lapTimer != nullptr && lapTimer->isLapAvailableForBackpack()) {
+        uint32_t lapTimeMs = lapTimer->getLapTimeForBackpack();
+        if (espNowActive && conf != nullptr && conf->getOsdEnabled()) {
+            sendLapTime(lapTimeMs);
+        }
+    }
+
+    if (espNowActive && conf != nullptr && conf->getOsdEnabled() &&
+        (currentTimeMs - lastOsdHeartbeatMs) > OSD_HEARTBEAT_INTERVAL_MS) {
+        lastOsdHeartbeatMs = currentTimeMs;
+        sendOsdHeartbeat();
     }
 }
 
@@ -176,4 +231,87 @@ void ElrsBackpack::handleEspNowPacket(const uint8_t *mac, const uint8_t *data, i
 
     pendingChannelIndex = channelIndex;
     pendingChannelValid = true;
+}
+
+void ElrsBackpack::sendMspFrame(uint16_t function, const uint8_t *payload, uint16_t payloadSize) {
+    if (!espNowActive) return;
+
+    if (!peerAdded) {
+        peerAdded = addPeer();
+        if (!peerAdded) return;
+    }
+
+    // MSPv2 frame: '$','X','<',flags,funcLo,funcHi,sizeLo,sizeHi,payload...,crc
+    uint8_t frame[8 + 64 + 1];
+    if ((size_t)payloadSize > sizeof(frame) - 9) return;
+
+    frame[0] = '$';
+    frame[1] = 'X';
+    frame[2] = '<';
+    frame[3] = 0;  // flags
+    frame[4] = function & 0xFF;
+    frame[5] = (function >> 8) & 0xFF;
+    frame[6] = payloadSize & 0xFF;
+    frame[7] = (payloadSize >> 8) & 0xFF;
+
+    if (payloadSize > 0 && payload != nullptr) {
+        memcpy(&frame[8], payload, payloadSize);
+    }
+
+    uint8_t crc = 0;
+    for (int i = 3; i < 8 + payloadSize; i++) {
+        crc = crc8_dvb_s2(crc, frame[i]);
+    }
+    frame[8 + payloadSize] = crc;
+
+    esp_err_t result = esp_now_send(uid, frame, 8 + payloadSize + 1);
+    if (result != ESP_OK) {
+        DEBUG("ElrsBackpack: esp_now_send failed for function %u, err=%d\n", function, (int)result);
+    }
+}
+
+void ElrsBackpack::sendOsdHeartbeat() {
+    uint8_t heartbeatPayload[1] = {MSP_DISPLAYPORT_SUBCMD_HEARTBEAT};
+    sendMspFrame(MSP_DISPLAYPORT, heartbeatPayload, sizeof(heartbeatPayload));
+}
+
+void ElrsBackpack::sendLapTime(uint32_t lapTimeMs) {
+    if (!espNowActive) return;
+    if (conf == nullptr || !conf->getOsdEnabled()) return;
+
+    uint8_t row = conf->getOsdRow();
+    uint8_t col = conf->getOsdCol();
+
+    char text[16];
+    uint32_t totalMs = lapTimeMs;
+    uint32_t minutes = totalMs / 60000;
+    uint32_t seconds = (totalMs / 1000) % 60;
+    uint32_t millisPart = totalMs % 1000;
+
+    if (minutes > 0) {
+        snprintf(text, sizeof(text), "%lu:%02lu.%03lu", (unsigned long)minutes,
+                 (unsigned long)seconds, (unsigned long)millisPart);
+    } else {
+        snprintf(text, sizeof(text), "%lu.%03lu", (unsigned long)seconds, (unsigned long)millisPart);
+    }
+
+    // Clear the display region.
+    uint8_t clearPayload[1] = {MSP_DISPLAYPORT_SUBCMD_CLEAR};
+    sendMspFrame(MSP_DISPLAYPORT, clearPayload, sizeof(clearPayload));
+
+    // Write the lap time string.
+    size_t textLen = strlen(text);
+    uint8_t writePayload[4 + 16] = {0};
+    writePayload[0] = MSP_DISPLAYPORT_SUBCMD_WRITE_STRING;
+    writePayload[1] = row;
+    writePayload[2] = col;
+    writePayload[3] = LAPTIME_OSD_ATTR;
+    memcpy(&writePayload[4], text, textLen);
+    sendMspFrame(MSP_DISPLAYPORT, writePayload, 4 + textLen);
+
+    // Commit/draw the screen.
+    uint8_t drawPayload[1] = {MSP_DISPLAYPORT_SUBCMD_DRAW_SCREEN};
+    sendMspFrame(MSP_DISPLAYPORT, drawPayload, sizeof(drawPayload));
+
+    DEBUG("ElrsBackpack: sent lap time OSD message: %s\n", text);
 }

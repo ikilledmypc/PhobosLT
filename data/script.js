@@ -12,6 +12,9 @@ const pilotNameInput = document.getElementById("pname");
 const ssidInput = document.getElementById("ssid");
 const pwdInput = document.getElementById("pwd");
 const bindPhraseInput = document.getElementById("bindPhrase");
+const osdEnabledInput = document.getElementById("osdEnabled");
+const osdRowInput = document.getElementById("osdRow");
+const osdColInput = document.getElementById("osdCol");
 const minLapInput = document.getElementById("minLap");
 const alarmThreshold = document.getElementById("alarmThreshold");
 
@@ -82,6 +85,9 @@ onload = function (e) {
       ssidInput.value = config.ssid;
       pwdInput.value = config.pwd;
       bindPhraseInput.value = config.bindPhrase;
+      osdEnabledInput.checked = !!config.osdEnabled;
+      osdRowInput.value = config.osdRow;
+      osdColInput.value = config.osdCol;
       populateFreqOutput();
       stopRaceButton.disabled = true;
       startRaceButton.disabled = false;
@@ -262,6 +268,9 @@ function saveConfig() {
       ssid: ssidInput.value,
       pwd: pwdInput.value,
       bindPhrase: bindPhraseInput.value,
+      osdEnabled: osdEnabledInput.checked ? 1 : 0,
+      osdRow: parseInt(osdRowInput.value),
+      osdCol: parseInt(osdColInput.value),
     }),
   })
     .then((response) => response.json())

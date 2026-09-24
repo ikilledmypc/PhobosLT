@@ -67,7 +67,7 @@
 #define EEPROM_RESERVED_SIZE 256
 #define CONFIG_MAGIC_MASK (0b11U << 30)
 #define CONFIG_MAGIC (0b01U << 30)
-#define CONFIG_VERSION 1U
+#define CONFIG_VERSION 2U
 
 #define EEPROM_CHECK_TIME_MS 1000
 
@@ -84,6 +84,9 @@ typedef struct {
     char ssid[33];
     char password[33];
     char bindingPhrase[33];
+    uint8_t osdEnabled;
+    uint8_t osdRow;
+    uint8_t osdCol;
 } laptimer_config_t;
 
 class Config {
@@ -106,6 +109,9 @@ class Config {
     char* getSsid();
     char* getPassword();
     char* getBindingPhrase();
+    bool getOsdEnabled();
+    uint8_t getOsdRow();
+    uint8_t getOsdCol();
 
    private:
     laptimer_config_t conf;

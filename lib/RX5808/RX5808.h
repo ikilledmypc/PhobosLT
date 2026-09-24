@@ -1,3 +1,5 @@
+#pragma once
+
 #include <stdint.h>
 
 #define RX5808_MIN_TUNETIME 35    // after set freq need to wait this long before read RSSI

@@ -1,3 +1,5 @@
+#pragma once
+
 #include "RX5808.h"
 #include "buzzer.h"
 #include "config.h"
@@ -22,6 +24,8 @@ class LapTimer {
     uint8_t getRssi();
     uint32_t getLapTime();
     bool isLapAvailable();
+    uint32_t getLapTimeForBackpack();
+    bool isLapAvailableForBackpack();
 
    private:
     laptimer_state_e state = STOPPED;
@@ -42,6 +46,7 @@ class LapTimer {
     uint32_t rssiPeakTimeMs;
 
     bool lapAvailable = false;
+    bool lapAvailableForBackpack = false;
 
     void lapPeakCapture();
     bool lapPeakCaptured();

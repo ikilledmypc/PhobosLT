@@ -44,7 +44,7 @@ void setup() {
     timer.init(&config, &rx, &buzzer, &led);
     monitor.init(PIN_VBAT, VBAT_SCALE, VBAT_ADD, &buzzer, &led);
     ws.init(&config, &timer, &monitor, &buzzer, &led);
-    elrsBackpack.init(&config);
+    elrsBackpack.init(&config, &timer);
     led.on(400);
     buzzer.beep(200);
     initParallelTask();

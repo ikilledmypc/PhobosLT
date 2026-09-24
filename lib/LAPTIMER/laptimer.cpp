@@ -111,23 +111,34 @@ void LapTimer::finishLap() {
     }
     lapCount = (lapCount + 1) % LAPTIMER_LAP_HISTORY;
     lapAvailable = true;
+    lapAvailableForBackpack = true;
 }
 
 uint8_t LapTimer::getRssi() {
     return rssi[rssiCount];
 }
 
-uint32_t LapTimer::getLapTime() {
-    uint32_t lapTime = 0;
-    lapAvailable = false;
+static uint32_t lastLapTimeValue(uint8_t lapCount, uint32_t *lapTimes) {
     if (lapCount == 0) {
-        lapTime = lapTimes[LAPTIMER_LAP_HISTORY - 1];
-    } else {
-        lapTime = lapTimes[lapCount - 1];
+        return lapTimes[LAPTIMER_LAP_HISTORY - 1];
     }
-    return lapTime;
+    return lapTimes[lapCount - 1];
+}
+
+uint32_t LapTimer::getLapTime() {
+    lapAvailable = false;
+    return lastLapTimeValue(lapCount, lapTimes);
 }
 
 bool LapTimer::isLapAvailable() {
     return lapAvailable;
+}
+
+uint32_t LapTimer::getLapTimeForBackpack() {
+    lapAvailableForBackpack = false;
+    return lastLapTimeValue(lapCount, lapTimes);
+}
+
+bool LapTimer::isLapAvailableForBackpack() {
+    return lapAvailableForBackpack;
 }
