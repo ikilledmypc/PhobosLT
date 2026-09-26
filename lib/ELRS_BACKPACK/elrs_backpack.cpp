@@ -243,7 +243,7 @@ void ElrsBackpack::sendMspFrame(uint16_t function, const uint8_t *payload, uint1
     }
 
     // MSPv2 frame: '$','X','<',flags,funcLo,funcHi,sizeLo,sizeHi,payload...,crc
-    uint8_t frame[8 + 64 + 1];
+    uint8_t frame[8 + 128 + 1];
     if ((size_t)payloadSize > sizeof(frame) - 9) return;
 
     frame[0] = '$';
@@ -283,22 +283,24 @@ void ElrsBackpack::sendLapTime(uint32_t lapTimeMs[3]) {
     uint8_t row = conf->getOsdRow();
     uint8_t col = conf->getOsdCol();
 
-    // Clear the display region.
-    uint8_t clearPayload[1] = {MSP_DISPLAYPORT_SUBCMD_CLEAR};
-    sendMspFrame(MSP_DISPLAYPORT, clearPayload, sizeof(clearPayload));
+    // Pack clear + 4 lap time writes + draw as sub-messages in a single MSP frame.
+    uint8_t payload[128];
+    size_t len = 0;
 
-    for( uint32_t time, i = 0; i < 4; i++) {
+    payload[len++] = MSP_DISPLAYPORT_SUBCMD_CLEAR;
+
+    for (uint32_t i = 0; i < 4; i++) {
         char text[16];
         uint32_t totalMs = 0;
 
-        if(i > 2) {
-            for(uint_fast32_t j = 0; j< 3; j++){
+        if (i > 2) {
+            for (uint_fast32_t j = 0; j < 3; j++) {
                 totalMs += lapTimeMs[j];
-            } 
+            }
         } else {
             totalMs = lapTimeMs[i];
         }
-         
+
         uint32_t minutes = totalMs / 60000;
         uint32_t seconds = (totalMs / 1000) % 60;
         uint32_t millisPart = totalMs % 1000;
@@ -310,22 +312,16 @@ void ElrsBackpack::sendLapTime(uint32_t lapTimeMs[3]) {
             snprintf(text, sizeof(text), "%lu.%03lu", (unsigned long)seconds, (unsigned long)millisPart);
         }
 
- 
-
-        // Write the lap time string.
         size_t textLen = strlen(text);
-        uint8_t writePayload[4 + 16] = {0};
-        writePayload[0] = MSP_DISPLAYPORT_SUBCMD_WRITE_STRING;
-        writePayload[1] = row + i;
-        writePayload[2] = col;
-        writePayload[3] = LAPTIME_OSD_ATTR;
-        memcpy(&writePayload[4], text, textLen);
-        sendMspFrame(MSP_DISPLAYPORT, writePayload, 4 + textLen);
+        payload[len++] = MSP_DISPLAYPORT_SUBCMD_WRITE_STRING;
+        payload[len++] = row + i;
+        payload[len++] = col;
+        payload[len++] = LAPTIME_OSD_ATTR;
+        memcpy(&payload[len], text, textLen);
+        len += textLen;
     }
 
-    // Commit/draw the screen.
-    uint8_t drawPayload[1] = {MSP_DISPLAYPORT_SUBCMD_DRAW_SCREEN};
-    sendMspFrame(MSP_DISPLAYPORT, drawPayload, sizeof(drawPayload));
+    payload[len++] = MSP_DISPLAYPORT_SUBCMD_DRAW_SCREEN;
 
-    // DEBUG("ElrsBackpack: sent lap time OSD message: %s\n", text);
+    sendMspFrame(MSP_DISPLAYPORT, payload, len);
 }
