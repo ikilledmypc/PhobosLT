@@ -42,10 +42,15 @@ class ElrsBackpack {
 
     uint32_t lastOsdHeartbeatMs = 0;
 
+    // Last MSP DisplayPort frame built by sendLapTime(), repeated on the
+    // resend interval so a dropped ESP-NOW packet is recovered on the goggles.
+    uint8_t lastLapPayload[128] = {0};
+    size_t lastLapPayloadLen = 0;
+
     void deriveUidFromPhrase(const char *phrase, uint8_t *uidOut);
     bool setupEspNow();
     void applyChannelIndex(uint8_t index);
     bool addPeer();
     void sendMspFrame(uint16_t function, const uint8_t *payload, uint16_t payloadSize);
-    void sendOsdHeartbeat();
+    void resendLastLapFrame();
 };

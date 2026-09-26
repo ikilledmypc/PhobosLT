@@ -23,11 +23,12 @@
 #define MSP_DISPLAYPORT_SUBCMD_WRITE_STRING 3
 #define MSP_DISPLAYPORT_SUBCMD_DRAW_SCREEN 4
 
-// How often (ms) to send an MSP DisplayPort heartbeat to keep the OSD
-// "session" open on the goggles. Betaflight-style DisplayPort receivers
-// (including the HDZero VRX) revert to normal video and stop accepting
-// write/draw commands if no heartbeat is received for a short timeout.
-#define OSD_HEARTBEAT_INTERVAL_MS 250
+// How often (ms) to repeat the last MSP DisplayPort frame to keep the OSD
+// "session" open on the goggles and recover from a dropped ESP-NOW packet.
+// Betaflight-style DisplayPort receivers (including the HDZero VRX) revert
+// to normal video and stop accepting write/draw commands if nothing is
+// received for a short timeout.
+#define OSD_RESEND_INTERVAL_MS 250
 
 // Default OSD position for the lap time text (row/col in character cells),
 // used only if Config does not provide a value (should not normally happen).
@@ -182,9 +183,9 @@ void ElrsBackpack::update(uint32_t currentTimeMs) {
     }
 
     if (espNowActive && conf != nullptr && conf->getOsdEnabled() &&
-        (currentTimeMs - lastOsdHeartbeatMs) > OSD_HEARTBEAT_INTERVAL_MS) {
+        (currentTimeMs - lastOsdHeartbeatMs) > OSD_RESEND_INTERVAL_MS) {
         lastOsdHeartbeatMs = currentTimeMs;
-        sendOsdHeartbeat();
+        resendLastLapFrame();
     }
 }
 
@@ -271,9 +272,14 @@ void ElrsBackpack::sendMspFrame(uint16_t function, const uint8_t *payload, uint1
     }
 }
 
-void ElrsBackpack::sendOsdHeartbeat() {
-    uint8_t heartbeatPayload[1] = {MSP_DISPLAYPORT_SUBCMD_HEARTBEAT};
-    sendMspFrame(MSP_DISPLAYPORT, heartbeatPayload, sizeof(heartbeatPayload));
+void ElrsBackpack::resendLastLapFrame() {
+    if (lastLapPayloadLen == 0) {
+        // No lap drawn yet, send a heartbeat to keep the OSD session alive.
+        uint8_t heartbeatPayload[1] = {MSP_DISPLAYPORT_SUBCMD_HEARTBEAT};
+        sendMspFrame(MSP_DISPLAYPORT, heartbeatPayload, sizeof(heartbeatPayload));
+        return;
+    }
+    sendMspFrame(MSP_DISPLAYPORT, lastLapPayload, lastLapPayloadLen);
 }
 
 void ElrsBackpack::sendLapTime(uint32_t lapTimeMs[3]) {
@@ -322,6 +328,9 @@ void ElrsBackpack::sendLapTime(uint32_t lapTimeMs[3]) {
     }
 
     payload[len++] = MSP_DISPLAYPORT_SUBCMD_DRAW_SCREEN;
+
+    memcpy(lastLapPayload, payload, len);
+    lastLapPayloadLen = len;
 
     sendMspFrame(MSP_DISPLAYPORT, payload, len);
 }
