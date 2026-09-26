@@ -178,15 +178,17 @@ void ElrsBackpack::update(uint32_t currentTimeMs) {
         uint32_t lapTimeMs[3];
         lapTimer->getLapTimeForBackpack(lapTimeMs);
         if (espNowActive && conf != nullptr && conf->getOsdEnabled()) {
-            sendLapTime(lapTimeMs);
+            sendLapTime(currentTimeMs, lapTimeMs);
         }
     }
 
     if (espNowActive && conf != nullptr && conf->getOsdEnabled() &&
         (currentTimeMs - lastOsdHeartbeatMs) > OSD_RESEND_INTERVAL_MS) {
         lastOsdHeartbeatMs = currentTimeMs;
-        resendLastLapFrame();
+        resendLastLapFrame(currentTimeMs);
     }
+
+    processFrameQueue(currentTimeMs);
 }
 
 void ElrsBackpack::applyChannelIndex(uint8_t index) {
@@ -244,7 +246,7 @@ void ElrsBackpack::sendMspFrame(uint16_t function, const uint8_t *payload, uint1
     }
 
     // MSPv2 frame: '$','X','<',flags,funcLo,funcHi,sizeLo,sizeHi,payload...,crc
-    uint8_t frame[8 + 128 + 1];
+    uint8_t frame[8 + 64 + 1];
     if ((size_t)payloadSize > sizeof(frame) - 9) return;
 
     frame[0] = '$';
@@ -272,28 +274,56 @@ void ElrsBackpack::sendMspFrame(uint16_t function, const uint8_t *payload, uint1
     }
 }
 
-void ElrsBackpack::resendLastLapFrame() {
-    if (lastLapPayloadLen == 0) {
+void ElrsBackpack::enqueueFrame(uint16_t function, const uint8_t *payload, uint8_t payloadSize) {
+    if (queueCount >= MSP_FRAME_QUEUE_CAPACITY || payloadSize > sizeof(PendingMspFrame::payload)) return;
+
+    PendingMspFrame &frame = frameQueue[(queueHead + queueCount) % MSP_FRAME_QUEUE_CAPACITY];
+    frame.function = function;
+    frame.payloadSize = payloadSize;
+    memcpy(frame.payload, payload, payloadSize);
+    queueCount++;
+}
+
+void ElrsBackpack::processFrameQueue(uint32_t currentTimeMs) {
+    if (queueCount == 0) return;
+    if ((currentTimeMs - lastFrameSentMs) < MSP_FRAME_STAGGER_MS) return;
+
+    lastFrameSentMs = currentTimeMs;
+    PendingMspFrame &frame = frameQueue[queueHead];
+    sendMspFrame(frame.function, frame.payload, frame.payloadSize);
+    queueHead = (queueHead + 1) % MSP_FRAME_QUEUE_CAPACITY;
+    queueCount--;
+}
+
+void ElrsBackpack::resendLastLapFrame(uint32_t currentTimeMs) {
+    if (!hasLastLapTimes) {
         // No lap drawn yet, send a heartbeat to keep the OSD session alive.
         uint8_t heartbeatPayload[1] = {MSP_DISPLAYPORT_SUBCMD_HEARTBEAT};
         sendMspFrame(MSP_DISPLAYPORT, heartbeatPayload, sizeof(heartbeatPayload));
         return;
     }
-    sendMspFrame(MSP_DISPLAYPORT, lastLapPayload, lastLapPayloadLen);
+    sendLapTime(currentTimeMs, lastLapTimeMs);
 }
 
-void ElrsBackpack::sendLapTime(uint32_t lapTimeMs[3]) {
+void ElrsBackpack::sendLapTime(uint32_t currentTimeMs, uint32_t lapTimeMs[3]) {
     if (!espNowActive) return;
     if (conf == nullptr || !conf->getOsdEnabled()) return;
 
     uint8_t row = conf->getOsdRow();
     uint8_t col = conf->getOsdCol();
 
-    // Pack clear + 4 lap time writes + draw as sub-messages in a single MSP frame.
-    uint8_t payload[128];
-    size_t len = 0;
+    memcpy(lastLapTimeMs, lapTimeMs, sizeof(lastLapTimeMs));
+    hasLastLapTimes = true;
 
-    payload[len++] = MSP_DISPLAYPORT_SUBCMD_CLEAR;
+    // Replace any not-yet-sent frames from a previous update with this one.
+    queueHead = 0;
+    queueCount = 0;
+    // Send the first queued frame immediately rather than waiting a full stagger interval.
+    lastFrameSentMs = currentTimeMs - MSP_FRAME_STAGGER_MS;
+
+    // Clear the display region.
+    uint8_t clearPayload[1] = {MSP_DISPLAYPORT_SUBCMD_CLEAR};
+    enqueueFrame(MSP_DISPLAYPORT, clearPayload, sizeof(clearPayload));
 
     for (uint32_t i = 0; i < 4; i++) {
         char text[16];
@@ -318,19 +348,18 @@ void ElrsBackpack::sendLapTime(uint32_t lapTimeMs[3]) {
             snprintf(text, sizeof(text), "%lu.%03lu", (unsigned long)seconds, (unsigned long)millisPart);
         }
 
+        // Write the lap time string.
         size_t textLen = strlen(text);
-        payload[len++] = MSP_DISPLAYPORT_SUBCMD_WRITE_STRING;
-        payload[len++] = row + i;
-        payload[len++] = col;
-        payload[len++] = LAPTIME_OSD_ATTR;
-        memcpy(&payload[len], text, textLen);
-        len += textLen;
+        uint8_t writePayload[4 + 16] = {0};
+        writePayload[0] = MSP_DISPLAYPORT_SUBCMD_WRITE_STRING;
+        writePayload[1] = row + i;
+        writePayload[2] = col;
+        writePayload[3] = LAPTIME_OSD_ATTR;
+        memcpy(&writePayload[4], text, textLen);
+        enqueueFrame(MSP_DISPLAYPORT, writePayload, 4 + textLen);
     }
 
-    payload[len++] = MSP_DISPLAYPORT_SUBCMD_DRAW_SCREEN;
-
-    memcpy(lastLapPayload, payload, len);
-    lastLapPayloadLen = len;
-
-    sendMspFrame(MSP_DISPLAYPORT, payload, len);
+    // Commit/draw the screen.
+    uint8_t drawPayload[1] = {MSP_DISPLAYPORT_SUBCMD_DRAW_SCREEN};
+    enqueueFrame(MSP_DISPLAYPORT, drawPayload, sizeof(drawPayload));
 }

@@ -10,6 +10,14 @@
 // e.g. because the binding phrase changed or the WiFi mode changed.
 #define ELRS_BACKPACK_CHECK_INTERVAL_MS 1000
 
+// Minimum spacing (ms) between individual MSP frames sent for a single lap
+// time update, so the goggles/backpack aren't hit with a burst of ESP-NOW
+// packets all at once.
+#define MSP_FRAME_STAGGER_MS 20
+
+// clear + 4 lap time writes + draw.
+#define MSP_FRAME_QUEUE_CAPACITY 6
+
 class ElrsBackpack {
    public:
     void init(Config *config, LapTimer *lapTimer);
@@ -20,9 +28,10 @@ class ElrsBackpack {
     // from the bound peer, stores the channel index for processing in update().
     void handleEspNowPacket(const uint8_t *mac, const uint8_t *data, int len);
 
-    // Builds and sends MSP_DISPLAYPORT frames to show the given lap time
-    // (milliseconds) on a bound HDZero goggle's OSD via the ELRS Backpack.
-    void sendLapTime(uint32_t lapTimeMs[3]);
+    // Queues MSP_DISPLAYPORT frames to show the given lap time (milliseconds)
+    // on a bound HDZero goggle's OSD via the ELRS Backpack. Frames are sent
+    // one at a time, staggered by MSP_FRAME_STAGGER_MS, from update().
+    void sendLapTime(uint32_t currentTimeMs, uint32_t lapTimeMs[3]);
 
    private:
     Config *conf = nullptr;
@@ -42,15 +51,29 @@ class ElrsBackpack {
 
     uint32_t lastOsdHeartbeatMs = 0;
 
-    // Last MSP DisplayPort frame built by sendLapTime(), repeated on the
-    // resend interval so a dropped ESP-NOW packet is recovered on the goggles.
-    uint8_t lastLapPayload[128] = {0};
-    size_t lastLapPayloadLen = 0;
+    // Last lap times sent by sendLapTime(), replayed on the resend interval
+    // so a dropped ESP-NOW packet is recovered on the goggles.
+    uint32_t lastLapTimeMs[3] = {0, 0, 0};
+    bool hasLastLapTimes = false;
+
+    // Frames awaiting transmission, drained one at a time (staggered) by
+    // processFrameQueue() so building a lap time update never blocks update().
+    struct PendingMspFrame {
+        uint16_t function;
+        uint8_t payload[20];
+        uint8_t payloadSize;
+    };
+    PendingMspFrame frameQueue[MSP_FRAME_QUEUE_CAPACITY];
+    uint8_t queueHead = 0;
+    uint8_t queueCount = 0;
+    uint32_t lastFrameSentMs = 0;
 
     void deriveUidFromPhrase(const char *phrase, uint8_t *uidOut);
     bool setupEspNow();
     void applyChannelIndex(uint8_t index);
     bool addPeer();
     void sendMspFrame(uint16_t function, const uint8_t *payload, uint16_t payloadSize);
-    void resendLastLapFrame();
+    void enqueueFrame(uint16_t function, const uint8_t *payload, uint8_t payloadSize);
+    void processFrameQueue(uint32_t currentTimeMs);
+    void resendLastLapFrame(uint32_t currentTimeMs);
 };
