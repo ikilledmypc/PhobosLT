@@ -17,9 +17,6 @@
 // MSP DisplayPort function used to draw text on a bound HDZero goggle's OSD
 // via the ELRS Backpack. Sub-command is payload byte 0.
 #define MSP_DISPLAYPORT 182
-#define MSP_DISPLAYPORT_SUBCMD_HEARTBEAT 0
-#define MSP_DISPLAYPORT_SUBCMD_RELEASE 1
-#define MSP_DISPLAYPORT_SUBCMD_CLEAR 2
 #define MSP_DISPLAYPORT_SUBCMD_WRITE_STRING 3
 #define MSP_DISPLAYPORT_SUBCMD_DRAW_SCREEN 4
 
@@ -31,8 +28,13 @@
 // longest expected string, "MM:SS.mmm".
 #define LAPTIME_OSD_WIDTH 9
 
+// An OSD burst is one WRITE per line (3 lap times + their total) followed by a DRAW.
+#define OSD_LINE_COUNT 4
+#define OSD_BURST_FRAMES (OSD_LINE_COUNT + 1)
+
 // Delays (ms after a lap's first burst started) at which that burst is sent
-// again, so a dropped ESP-NOW packet is recovered on the goggles.
+// again, so a dropped ESP-NOW packet is recovered on the goggles. The padded
+// writes are idempotent, so repeating them is harmless.
 static const uint32_t osdLapRepeatDelaysMs[] = {300, 1000};
 #define OSD_LAP_REPEAT_COUNT (sizeof(osdLapRepeatDelaysMs) / sizeof(osdLapRepeatDelaysMs[0]))
 
@@ -62,6 +64,31 @@ static uint8_t crc8_dvb_s2(uint8_t crc, uint8_t a) {
         }
     }
     return crc;
+}
+
+// CRC8-DVB-S2 over an MSPv2 frame, from the flags byte up to the end of the payload.
+static uint8_t mspCrc(const uint8_t *frame, uint16_t payloadSize) {
+    uint8_t crc = 0;
+    for (int i = 3; i < 8 + payloadSize; i++) {
+        crc = crc8_dvb_s2(crc, frame[i]);
+    }
+    return crc;
+}
+
+// Formats a time as "S.mmm" or "M:SS.mmm", space-padded to LAPTIME_OSD_WIDTH.
+static void formatLapTime(uint32_t ms, char *text, size_t textSize) {
+    char timeText[16];
+    uint32_t minutes = ms / 60000;
+    uint32_t seconds = (ms / 1000) % 60;
+    uint32_t millisPart = ms % 1000;
+
+    if (minutes > 0) {
+        snprintf(timeText, sizeof(timeText), "%lu:%02lu.%03lu", (unsigned long)minutes,
+                 (unsigned long)seconds, (unsigned long)millisPart);
+    } else {
+        snprintf(timeText, sizeof(timeText), "%lu.%03lu", (unsigned long)seconds, (unsigned long)millisPart);
+    }
+    snprintf(text, textSize, "%-*s", LAPTIME_OSD_WIDTH, timeText);
 }
 
 static void onEspNowDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
@@ -109,7 +136,6 @@ bool ElrsBackpack::setupEspNow() {
     }
 
     wifi_interface_t iface = (mode == WIFI_STA) ? WIFI_IF_STA : WIFI_IF_AP;
-    espNowIface = iface;
 
     if (esp_wifi_set_mac(iface, uid) != ESP_OK) {
         DEBUG("ElrsBackpack: failed to set soft MAC address\n");
@@ -123,15 +149,17 @@ bool ElrsBackpack::setupEspNow() {
 
     esp_now_register_recv_cb(onEspNowDataRecv);
 
+    if (!addPeer(iface)) {
+        return false;
+    }
+
     DEBUG("ElrsBackpack: ESP-NOW active, UID = %02x:%02x:%02x:%02x:%02x:%02x, wifi mode = %d, channel = %d\n",
           uid[0], uid[1], uid[2], uid[3], uid[4], uid[5], (int)mode, (int)WiFi.channel());
-
-    peerAdded = false;
 
     return true;
 }
 
-bool ElrsBackpack::addPeer() {
+bool ElrsBackpack::addPeer(wifi_interface_t iface) {
     if (esp_now_is_peer_exist(uid)) {
         return true;
     }
@@ -139,7 +167,7 @@ bool ElrsBackpack::addPeer() {
     esp_now_peer_info_t peerInfo = {};
     memcpy(peerInfo.peer_addr, uid, sizeof(uid));
     peerInfo.channel = 0;  // Use current WiFi channel.
-    peerInfo.ifidx = espNowIface;
+    peerInfo.ifidx = iface;
     peerInfo.encrypt = false;
 
     if (esp_now_add_peer(&peerInfo) != ESP_OK) {
@@ -173,27 +201,23 @@ void ElrsBackpack::update(uint32_t currentTimeMs) {
 
     if (pendingChannelValid) {
         pendingChannelValid = false;
-        applyChannelIndex(pendingChannelIndex);
+        uint16_t frequency = elrsVtxFrequencyTable[pendingChannelIndex];
+        DEBUG("ElrsBackpack: applying VTX channel index %u -> %u MHz\n", pendingChannelIndex, frequency);
+        conf->setFrequency(frequency);
     }
 
     if (lapTimer != nullptr && lapTimer->isLapAvailableForBackpack()) {
-        uint32_t lapTimeMs[3];
-        lapTimer->getLapTimeForBackpack(lapTimeMs);
-        if (espNowActive && conf != nullptr && conf->getOsdEnabled()) {
-            sendLapTime(currentTimeMs, lapTimeMs);
-        }
+        // Always consume the lap, even if the OSD is off, so a stale lap isn't drawn later.
+        lapTimer->getLapTimeForBackpack(osdLapTimeMs);
+        // Start a new burst right away; it rewrites every line, so an in-flight
+        // burst for the previous lap can safely be abandoned.
+        burstStep = 0;
+        lapRepeatsSent = 0;
+        lapBurstStartMs = currentTimeMs;
+        lastFrameSentMs = currentTimeMs - MSP_FRAME_STAGGER_MS;
     }
 
-    processFrameQueue(currentTimeMs);
-}
-
-void ElrsBackpack::applyChannelIndex(uint8_t index) {
-    if (index >= MSP_VTX_CHANNEL_COUNT) return;
-    if (conf == nullptr) return;
-
-    uint16_t frequency = elrsVtxFrequencyTable[index];
-    DEBUG("ElrsBackpack: applying VTX channel index %u -> %u MHz\n", index, frequency);
-    conf->setFrequency(frequency);
+    processOsd(currentTimeMs);
 }
 
 void ElrsBackpack::handleEspNowPacket(const uint8_t *mac, const uint8_t *data, int len) {
@@ -214,11 +238,7 @@ void ElrsBackpack::handleEspNowPacket(const uint8_t *mac, const uint8_t *data, i
 
     if ((size_t)len != (size_t)(8 + payloadSize + 1)) return;
 
-    uint8_t crc = 0;
-    for (int i = 3; i < 8 + payloadSize; i++) {
-        crc = crc8_dvb_s2(crc, data[i]);
-    }
-    if (crc != data[8 + payloadSize]) {
+    if (mspCrc(data, payloadSize) != data[8 + payloadSize]) {
         DEBUG("ElrsBackpack: MSP CRC mismatch\n");
         return;
     }
@@ -234,13 +254,6 @@ void ElrsBackpack::handleEspNowPacket(const uint8_t *mac, const uint8_t *data, i
 }
 
 void ElrsBackpack::sendMspFrame(uint16_t function, const uint8_t *payload, uint16_t payloadSize) {
-    if (!espNowActive) return;
-
-    if (!peerAdded) {
-        peerAdded = addPeer();
-        if (!peerAdded) return;
-    }
-
     // MSPv2 frame: '$','X','<',flags,funcLo,funcHi,sizeLo,sizeHi,payload...,crc
     uint8_t frame[8 + 64 + 1];
     if ((size_t)payloadSize > sizeof(frame) - 9) return;
@@ -257,12 +270,7 @@ void ElrsBackpack::sendMspFrame(uint16_t function, const uint8_t *payload, uint1
     if (payloadSize > 0 && payload != nullptr) {
         memcpy(&frame[8], payload, payloadSize);
     }
-
-    uint8_t crc = 0;
-    for (int i = 3; i < 8 + payloadSize; i++) {
-        crc = crc8_dvb_s2(crc, frame[i]);
-    }
-    frame[8 + payloadSize] = crc;
+    frame[8 + payloadSize] = mspCrc(frame, payloadSize);
 
     esp_err_t result = esp_now_send(uid, frame, 8 + payloadSize + 1);
     if (result != ESP_OK) {
@@ -270,96 +278,47 @@ void ElrsBackpack::sendMspFrame(uint16_t function, const uint8_t *payload, uint1
     }
 }
 
-void ElrsBackpack::enqueueFrame(uint16_t function, const uint8_t *payload, uint8_t payloadSize) {
-    if (queueCount >= MSP_FRAME_QUEUE_CAPACITY || payloadSize > sizeof(PendingMspFrame::payload)) return;
-
-    PendingMspFrame &frame = frameQueue[(queueHead + queueCount) % MSP_FRAME_QUEUE_CAPACITY];
-    frame.function = function;
-    frame.payloadSize = payloadSize;
-    memcpy(frame.payload, payload, payloadSize);
-    queueCount++;
-}
-
-void ElrsBackpack::processFrameQueue(uint32_t currentTimeMs) {
-    if (queueCount == 0) {
-        if (pendingLapTimeValid) {
-            pendingLapTimeValid = false;
-            lapBurstStartMs = currentTimeMs;
-            lapRepeatsSent = 0;
-            startLapTimeBurst(currentTimeMs, osdLapTimeMs);
-        } else if (lapRepeatsSent < OSD_LAP_REPEAT_COUNT &&
-                   (currentTimeMs - lapBurstStartMs) >= osdLapRepeatDelaysMs[lapRepeatsSent]) {
-            lapRepeatsSent++;
-            if (espNowActive && conf->getOsdEnabled()) {
-                startLapTimeBurst(currentTimeMs, osdLapTimeMs);
-            }
-        }
+void ElrsBackpack::processOsd(uint32_t currentTimeMs) {
+    if (!espNowActive || !conf->getOsdEnabled()) {
+        // Cancel any in-flight burst and remaining repeats.
+        burstStep = OSD_BURST_FRAMES;
+        lapRepeatsSent = OSD_LAP_REPEAT_COUNT;
         return;
     }
-    if ((currentTimeMs - lastFrameSentMs) < MSP_FRAME_STAGGER_MS) return;
 
-    lastFrameSentMs = currentTimeMs;
-    PendingMspFrame &frame = frameQueue[queueHead];
-    sendMspFrame(frame.function, frame.payload, frame.payloadSize);
-    queueHead = (queueHead + 1) % MSP_FRAME_QUEUE_CAPACITY;
-    queueCount--;
-}
-
-void ElrsBackpack::sendLapTime(uint32_t currentTimeMs, uint32_t lapTimeMs[3]) {
-    if (!espNowActive) return;
-    if (conf == nullptr || !conf->getOsdEnabled()) return;
-
-    // Drawn by processFrameQueue() as soon as no burst is in flight (right away
-    // if the queue is empty), replacing any repeats of the previous lap.
-    memcpy(osdLapTimeMs, lapTimeMs, sizeof(osdLapTimeMs));
-    pendingLapTimeValid = true;
-}
-
-void ElrsBackpack::startLapTimeBurst(uint32_t currentTimeMs, uint32_t lapTimeMs[3]) {
-    uint8_t row = conf->getOsdRow();
-    uint8_t col = conf->getOsdCol();
-
-    // Send the first queued frame immediately rather than waiting a full stagger interval.
-    lastFrameSentMs = currentTimeMs - MSP_FRAME_STAGGER_MS;
-
-    for (uint32_t i = 0; i < 4; i++) {
-        char timeText[16];
-        char text[16];
-        uint32_t totalMs = 0;
-
-        if (i > 2) {
-            for (uint_fast32_t j = 0; j < 3; j++) {
-                totalMs += lapTimeMs[j];
-            }
-        } else {
-            totalMs = lapTimeMs[i];
-        }
-
-        uint32_t minutes = totalMs / 60000;
-        uint32_t seconds = (totalMs / 1000) % 60;
-        uint32_t millisPart = totalMs % 1000;
-
-        if (minutes > 0) {
-            snprintf(timeText, sizeof(timeText), "%lu:%02lu.%03lu", (unsigned long)minutes,
-                    (unsigned long)seconds, (unsigned long)millisPart);
-        } else {
-            snprintf(timeText, sizeof(timeText), "%lu.%03lu", (unsigned long)seconds, (unsigned long)millisPart);
-        }
-        snprintf(text, sizeof(text), "%-*s", LAPTIME_OSD_WIDTH, timeText);
-
-        // Write the lap time string.
-        size_t textLen = strlen(text);
-        uint8_t writePayload[4 + 16] = {0};
-        writePayload[0] = MSP_DISPLAYPORT_SUBCMD_WRITE_STRING;
-        writePayload[1] = row + i;
-        writePayload[2] = col;
-        writePayload[3] = LAPTIME_OSD_ATTR;
-        memcpy(&writePayload[4], text, textLen);
-        enqueueFrame(MSP_DISPLAYPORT, writePayload, 4 + textLen);
+    if (burstStep >= OSD_BURST_FRAMES) {
+        if (lapRepeatsSent >= OSD_LAP_REPEAT_COUNT ||
+            (currentTimeMs - lapBurstStartMs) < osdLapRepeatDelaysMs[lapRepeatsSent]) return;
+        lapRepeatsSent++;
+        burstStep = 0;
     }
 
-    // Commit/draw the screen.
-    uint8_t drawPayload[1] = {MSP_DISPLAYPORT_SUBCMD_DRAW_SCREEN};
-    enqueueFrame(MSP_DISPLAYPORT, drawPayload, sizeof(drawPayload));
-    DEBUG("ElrsBackpack: finished queueing lap time draw commands\n");
+    if ((currentTimeMs - lastFrameSentMs) < MSP_FRAME_STAGGER_MS) return;
+    lastFrameSentMs = currentTimeMs;
+
+    sendOsdFrame(burstStep++);
+}
+
+void ElrsBackpack::sendOsdFrame(uint8_t step) {
+    if (step >= OSD_LINE_COUNT) {
+        // Commit/draw the screen.
+        uint8_t drawPayload[1] = {MSP_DISPLAYPORT_SUBCMD_DRAW_SCREEN};
+        sendMspFrame(MSP_DISPLAYPORT, drawPayload, sizeof(drawPayload));
+        return;
+    }
+
+    // Lines 0-2 are the last three lap times, line 3 is their total.
+    uint32_t ms = step < 3 ? osdLapTimeMs[step] : osdLapTimeMs[0] + osdLapTimeMs[1] + osdLapTimeMs[2];
+
+    char text[16];
+    formatLapTime(ms, text, sizeof(text));
+    size_t textLen = strlen(text);
+
+    uint8_t writePayload[4 + sizeof(text)];
+    writePayload[0] = MSP_DISPLAYPORT_SUBCMD_WRITE_STRING;
+    writePayload[1] = conf->getOsdRow() + step;
+    writePayload[2] = conf->getOsdCol();
+    writePayload[3] = LAPTIME_OSD_ATTR;
+    memcpy(&writePayload[4], text, textLen);
+    sendMspFrame(MSP_DISPLAYPORT, writePayload, 4 + textLen);
 }
