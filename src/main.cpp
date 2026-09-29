@@ -27,12 +27,13 @@ static void parallelTask(void *pvArgs) {
         elrsBackpack.update(currentTimeMs);
         buzzer.handleBuzzer(currentTimeMs);
         led.handleLed(currentTimeMs);
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
 }
 
 static void initParallelTask() {
     disableCore0WDT();
-    xTaskCreatePinnedToCore(parallelTask, "parallelTask", 3000, NULL, 0, &xTimerTask, 0);
+    xTaskCreatePinnedToCore(parallelTask, "parallelTask", 4096, NULL, 0, &xTimerTask, 0);
 }
 
 void setup() {

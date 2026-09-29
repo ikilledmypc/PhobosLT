@@ -23,16 +23,18 @@
 #define MSP_DISPLAYPORT_SUBCMD_WRITE_STRING 3
 #define MSP_DISPLAYPORT_SUBCMD_DRAW_SCREEN 4
 
-// How often (ms) to repeat the last MSP DisplayPort frame to keep the OSD
-// "session" open on the goggles and recover from a dropped ESP-NOW packet.
-// Betaflight-style DisplayPort receivers (including the HDZero VRX) revert
-// to normal video and stop accepting write/draw commands if nothing is
-// received for a short timeout.
-#define OSD_RESEND_INTERVAL_MS 250
-
-// Default OSD position for the lap time text (row/col in character cells),
-// used only if Config does not provide a value (should not normally happen).
+// OSD character attribute used for the lap time text.
 #define LAPTIME_OSD_ATTR 0
+
+// Every lap time string is space-padded to this many characters, so a shorter
+// time fully overwrites a longer one and no CLEAR command is needed. Fits the
+// longest expected string, "MM:SS.mmm".
+#define LAPTIME_OSD_WIDTH 9
+
+// Delays (ms after a lap's first burst started) at which that burst is sent
+// again, so a dropped ESP-NOW packet is recovered on the goggles.
+static const uint32_t osdLapRepeatDelaysMs[] = {300, 1000};
+#define OSD_LAP_REPEAT_COUNT (sizeof(osdLapRepeatDelaysMs) / sizeof(osdLapRepeatDelaysMs[0]))
 
 // Standard 48 channel frequency table, matching the frequency table used by
 // the ExpressLRS Backpack RX5808 module, so that channel indices received
@@ -178,14 +180,8 @@ void ElrsBackpack::update(uint32_t currentTimeMs) {
         uint32_t lapTimeMs[3];
         lapTimer->getLapTimeForBackpack(lapTimeMs);
         if (espNowActive && conf != nullptr && conf->getOsdEnabled()) {
-            sendLapTime(currentTimeMs, lapTimeMs, true);
+            sendLapTime(currentTimeMs, lapTimeMs);
         }
-    }
-
-    if (espNowActive && conf != nullptr && conf->getOsdEnabled() &&
-        (currentTimeMs - lastOsdHeartbeatMs) > OSD_RESEND_INTERVAL_MS) {
-        lastOsdHeartbeatMs = currentTimeMs;
-        resendLastLapFrame(currentTimeMs);
     }
 
     processFrameQueue(currentTimeMs);
@@ -288,7 +284,15 @@ void ElrsBackpack::processFrameQueue(uint32_t currentTimeMs) {
     if (queueCount == 0) {
         if (pendingLapTimeValid) {
             pendingLapTimeValid = false;
-            startLapTimeBurst(currentTimeMs, pendingLapTimeMs, false);
+            lapBurstStartMs = currentTimeMs;
+            lapRepeatsSent = 0;
+            startLapTimeBurst(currentTimeMs, osdLapTimeMs);
+        } else if (lapRepeatsSent < OSD_LAP_REPEAT_COUNT &&
+                   (currentTimeMs - lapBurstStartMs) >= osdLapRepeatDelaysMs[lapRepeatsSent]) {
+            lapRepeatsSent++;
+            if (espNowActive && conf->getOsdEnabled()) {
+                startLapTimeBurst(currentTimeMs, osdLapTimeMs);
+            }
         }
         return;
     }
@@ -301,48 +305,25 @@ void ElrsBackpack::processFrameQueue(uint32_t currentTimeMs) {
     queueCount--;
 }
 
-void ElrsBackpack::resendLastLapFrame(uint32_t currentTimeMs) {
-    if (!hasLastLapTimes) {
-        // No lap drawn yet, send a heartbeat to keep the OSD session alive.
-        uint8_t heartbeatPayload[1] = {MSP_DISPLAYPORT_SUBCMD_HEARTBEAT};
-        sendMspFrame(MSP_DISPLAYPORT, heartbeatPayload, sizeof(heartbeatPayload));
-        return;
-    }
-    sendLapTime(currentTimeMs, lastLapTimeMs,false);
-}
-
-void ElrsBackpack::sendLapTime(uint32_t currentTimeMs, uint32_t lapTimeMs[3], boolean clearBefore) {
+void ElrsBackpack::sendLapTime(uint32_t currentTimeMs, uint32_t lapTimeMs[3]) {
     if (!espNowActive) return;
     if (conf == nullptr || !conf->getOsdEnabled()) return;
 
-    memcpy(lastLapTimeMs, lapTimeMs, sizeof(lastLapTimeMs));
-    hasLastLapTimes = true;
-
-    if (queueCount > 0) {
-        // A burst is still draining; never truncate it mid-sequence. Apply
-        // this update once the in-flight CLEAR/WRITE/DRAW sequence finishes.
-        memcpy(pendingLapTimeMs, lapTimeMs, sizeof(pendingLapTimeMs));
-        pendingLapTimeValid = true;
-        return;
-    }
-
-    startLapTimeBurst(currentTimeMs, lapTimeMs, clearBefore);
+    // Drawn by processFrameQueue() as soon as no burst is in flight (right away
+    // if the queue is empty), replacing any repeats of the previous lap.
+    memcpy(osdLapTimeMs, lapTimeMs, sizeof(osdLapTimeMs));
+    pendingLapTimeValid = true;
 }
 
-void ElrsBackpack::startLapTimeBurst(uint32_t currentTimeMs, uint32_t lapTimeMs[3], boolean clearBefore) {
+void ElrsBackpack::startLapTimeBurst(uint32_t currentTimeMs, uint32_t lapTimeMs[3]) {
     uint8_t row = conf->getOsdRow();
     uint8_t col = conf->getOsdCol();
 
     // Send the first queued frame immediately rather than waiting a full stagger interval.
     lastFrameSentMs = currentTimeMs - MSP_FRAME_STAGGER_MS;
 
-    // Clear the display region.
-    if(clearBefore) {
-        uint8_t clearPayload[1] = {MSP_DISPLAYPORT_SUBCMD_CLEAR};
-        enqueueFrame(MSP_DISPLAYPORT, clearPayload, sizeof(clearPayload));
-    }
-
     for (uint32_t i = 0; i < 4; i++) {
+        char timeText[16];
         char text[16];
         uint32_t totalMs = 0;
 
@@ -359,11 +340,12 @@ void ElrsBackpack::startLapTimeBurst(uint32_t currentTimeMs, uint32_t lapTimeMs[
         uint32_t millisPart = totalMs % 1000;
 
         if (minutes > 0) {
-            snprintf(text, sizeof(text), "%lu:%02lu.%03lu", (unsigned long)minutes,
+            snprintf(timeText, sizeof(timeText), "%lu:%02lu.%03lu", (unsigned long)minutes,
                     (unsigned long)seconds, (unsigned long)millisPart);
         } else {
-            snprintf(text, sizeof(text), "%lu.%03lu", (unsigned long)seconds, (unsigned long)millisPart);
+            snprintf(timeText, sizeof(timeText), "%lu.%03lu", (unsigned long)seconds, (unsigned long)millisPart);
         }
+        snprintf(text, sizeof(text), "%-*s", LAPTIME_OSD_WIDTH, timeText);
 
         // Write the lap time string.
         size_t textLen = strlen(text);
@@ -379,5 +361,5 @@ void ElrsBackpack::startLapTimeBurst(uint32_t currentTimeMs, uint32_t lapTimeMs[
     // Commit/draw the screen.
     uint8_t drawPayload[1] = {MSP_DISPLAYPORT_SUBCMD_DRAW_SCREEN};
     enqueueFrame(MSP_DISPLAYPORT, drawPayload, sizeof(drawPayload));
-    DEBUG("ELRSBackpack: finished queueing lap time draw commands");
+    DEBUG("ElrsBackpack: finished queueing lap time draw commands\n");
 }

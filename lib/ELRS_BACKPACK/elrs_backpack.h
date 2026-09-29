@@ -13,10 +13,10 @@
 // Minimum spacing (ms) between individual MSP frames sent for a single lap
 // time update, so the goggles/backpack aren't hit with a burst of ESP-NOW
 // packets all at once.
-#define MSP_FRAME_STAGGER_MS 250
+#define MSP_FRAME_STAGGER_MS 20
 
-// clear + 4 lap time writes + draw.
-#define MSP_FRAME_QUEUE_CAPACITY 6
+// 4 lap time writes + draw.
+#define MSP_FRAME_QUEUE_CAPACITY 5
 
 class ElrsBackpack {
    public:
@@ -28,10 +28,10 @@ class ElrsBackpack {
     // from the bound peer, stores the channel index for processing in update().
     void handleEspNowPacket(const uint8_t *mac, const uint8_t *data, int len);
 
-    // Queues MSP_DISPLAYPORT frames to show the given lap time (milliseconds)
-    // on a bound HDZero goggle's OSD via the ELRS Backpack. Frames are sent
-    // one at a time, staggered by MSP_FRAME_STAGGER_MS, from update().
-    void sendLapTime(uint32_t currentTimeMs, uint32_t lapTimeMs[3], boolean clearBefore);
+    // Queues MSP_DISPLAYPORT frames to show the last three lap times and their
+    // total (milliseconds) on a bound HDZero goggle's OSD via the ELRS Backpack.
+    // Frames are sent one at a time, staggered by MSP_FRAME_STAGGER_MS, from update().
+    void sendLapTime(uint32_t currentTimeMs, uint32_t lapTimeMs[3]);
    private:
     Config *conf = nullptr;
     LapTimer *lapTimer = nullptr;
@@ -48,13 +48,6 @@ class ElrsBackpack {
     volatile bool pendingChannelValid = false;
     volatile uint8_t pendingChannelIndex = 0;
 
-    uint32_t lastOsdHeartbeatMs = 0;
-
-    // Last lap times sent by sendLapTime(), replayed on the resend interval
-    // so a dropped ESP-NOW packet is recovered on the goggles.
-    uint32_t lastLapTimeMs[3] = {0, 0, 0};
-    bool hasLastLapTimes = false;
-
     // Frames awaiting transmission, drained one at a time (staggered) by
     // processFrameQueue() so building a lap time update never blocks update().
     struct PendingMspFrame {
@@ -67,11 +60,17 @@ class ElrsBackpack {
     uint8_t queueCount = 0;
     uint32_t lastFrameSentMs = 0;
 
-    // A lap time update requested while a burst is still draining, applied
-    // once the in-flight CLEAR/WRITE/DRAW sequence has fully completed so
-    // it is never truncated.
+    // Lap times currently shown on the OSD. A new lap sets pendingLapTimeValid
+    // and is drawn once any in-flight WRITE/DRAW sequence has fully completed,
+    // so a burst is never truncated.
     bool pendingLapTimeValid = false;
-    uint32_t pendingLapTimeMs[3] = {0, 0, 0};
+    uint32_t osdLapTimeMs[3] = {0, 0, 0};
+
+    // The burst for the latest lap is repeated a few times (see
+    // osdLapRepeatDelaysMs) to recover from dropped ESP-NOW packets. The
+    // padded writes are idempotent, so repeating them is harmless.
+    uint32_t lapBurstStartMs = 0;
+    uint8_t lapRepeatsSent = UINT8_MAX;  // No lap drawn yet, nothing to repeat.
 
     void deriveUidFromPhrase(const char *phrase, uint8_t *uidOut);
     bool setupEspNow();
@@ -79,7 +78,6 @@ class ElrsBackpack {
     bool addPeer();
     void sendMspFrame(uint16_t function, const uint8_t *payload, uint16_t payloadSize);
     void enqueueFrame(uint16_t function, const uint8_t *payload, uint8_t payloadSize);
-    void startLapTimeBurst(uint32_t currentTimeMs, uint32_t lapTimeMs[3], boolean clearBefore);
+    void startLapTimeBurst(uint32_t currentTimeMs, uint32_t lapTimeMs[3]);
     void processFrameQueue(uint32_t currentTimeMs);
-    void resendLastLapFrame(uint32_t currentTimeMs);
 };
