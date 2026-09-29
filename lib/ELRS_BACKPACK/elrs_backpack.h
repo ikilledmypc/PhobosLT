@@ -13,7 +13,7 @@
 // Minimum spacing (ms) between individual MSP frames sent for a single lap
 // time update, so the goggles/backpack aren't hit with a burst of ESP-NOW
 // packets all at once.
-#define MSP_FRAME_STAGGER_MS 20
+#define MSP_FRAME_STAGGER_MS 250
 
 // clear + 4 lap time writes + draw.
 #define MSP_FRAME_QUEUE_CAPACITY 6
@@ -31,8 +31,7 @@ class ElrsBackpack {
     // Queues MSP_DISPLAYPORT frames to show the given lap time (milliseconds)
     // on a bound HDZero goggle's OSD via the ELRS Backpack. Frames are sent
     // one at a time, staggered by MSP_FRAME_STAGGER_MS, from update().
-    void sendLapTime(uint32_t currentTimeMs, uint32_t lapTimeMs[3]);
-
+    void sendLapTime(uint32_t currentTimeMs, uint32_t lapTimeMs[3], boolean clearBefore);
    private:
     Config *conf = nullptr;
     LapTimer *lapTimer = nullptr;
@@ -68,12 +67,19 @@ class ElrsBackpack {
     uint8_t queueCount = 0;
     uint32_t lastFrameSentMs = 0;
 
+    // A lap time update requested while a burst is still draining, applied
+    // once the in-flight CLEAR/WRITE/DRAW sequence has fully completed so
+    // it is never truncated.
+    bool pendingLapTimeValid = false;
+    uint32_t pendingLapTimeMs[3] = {0, 0, 0};
+
     void deriveUidFromPhrase(const char *phrase, uint8_t *uidOut);
     bool setupEspNow();
     void applyChannelIndex(uint8_t index);
     bool addPeer();
     void sendMspFrame(uint16_t function, const uint8_t *payload, uint16_t payloadSize);
     void enqueueFrame(uint16_t function, const uint8_t *payload, uint8_t payloadSize);
+    void startLapTimeBurst(uint32_t currentTimeMs, uint32_t lapTimeMs[3], boolean clearBefore);
     void processFrameQueue(uint32_t currentTimeMs);
     void resendLastLapFrame(uint32_t currentTimeMs);
 };

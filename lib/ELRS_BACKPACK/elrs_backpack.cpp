@@ -178,7 +178,7 @@ void ElrsBackpack::update(uint32_t currentTimeMs) {
         uint32_t lapTimeMs[3];
         lapTimer->getLapTimeForBackpack(lapTimeMs);
         if (espNowActive && conf != nullptr && conf->getOsdEnabled()) {
-            sendLapTime(currentTimeMs, lapTimeMs);
+            sendLapTime(currentTimeMs, lapTimeMs, true);
         }
     }
 
@@ -285,7 +285,13 @@ void ElrsBackpack::enqueueFrame(uint16_t function, const uint8_t *payload, uint8
 }
 
 void ElrsBackpack::processFrameQueue(uint32_t currentTimeMs) {
-    if (queueCount == 0) return;
+    if (queueCount == 0) {
+        if (pendingLapTimeValid) {
+            pendingLapTimeValid = false;
+            startLapTimeBurst(currentTimeMs, pendingLapTimeMs, false);
+        }
+        return;
+    }
     if ((currentTimeMs - lastFrameSentMs) < MSP_FRAME_STAGGER_MS) return;
 
     lastFrameSentMs = currentTimeMs;
@@ -302,28 +308,39 @@ void ElrsBackpack::resendLastLapFrame(uint32_t currentTimeMs) {
         sendMspFrame(MSP_DISPLAYPORT, heartbeatPayload, sizeof(heartbeatPayload));
         return;
     }
-    sendLapTime(currentTimeMs, lastLapTimeMs);
+    sendLapTime(currentTimeMs, lastLapTimeMs,false);
 }
 
-void ElrsBackpack::sendLapTime(uint32_t currentTimeMs, uint32_t lapTimeMs[3]) {
+void ElrsBackpack::sendLapTime(uint32_t currentTimeMs, uint32_t lapTimeMs[3], boolean clearBefore) {
     if (!espNowActive) return;
     if (conf == nullptr || !conf->getOsdEnabled()) return;
-
-    uint8_t row = conf->getOsdRow();
-    uint8_t col = conf->getOsdCol();
 
     memcpy(lastLapTimeMs, lapTimeMs, sizeof(lastLapTimeMs));
     hasLastLapTimes = true;
 
-    // Replace any not-yet-sent frames from a previous update with this one.
-    queueHead = 0;
-    queueCount = 0;
+    if (queueCount > 0) {
+        // A burst is still draining; never truncate it mid-sequence. Apply
+        // this update once the in-flight CLEAR/WRITE/DRAW sequence finishes.
+        memcpy(pendingLapTimeMs, lapTimeMs, sizeof(pendingLapTimeMs));
+        pendingLapTimeValid = true;
+        return;
+    }
+
+    startLapTimeBurst(currentTimeMs, lapTimeMs, clearBefore);
+}
+
+void ElrsBackpack::startLapTimeBurst(uint32_t currentTimeMs, uint32_t lapTimeMs[3], boolean clearBefore) {
+    uint8_t row = conf->getOsdRow();
+    uint8_t col = conf->getOsdCol();
+
     // Send the first queued frame immediately rather than waiting a full stagger interval.
     lastFrameSentMs = currentTimeMs - MSP_FRAME_STAGGER_MS;
 
     // Clear the display region.
-    uint8_t clearPayload[1] = {MSP_DISPLAYPORT_SUBCMD_CLEAR};
-    enqueueFrame(MSP_DISPLAYPORT, clearPayload, sizeof(clearPayload));
+    if(clearBefore) {
+        uint8_t clearPayload[1] = {MSP_DISPLAYPORT_SUBCMD_CLEAR};
+        enqueueFrame(MSP_DISPLAYPORT, clearPayload, sizeof(clearPayload));
+    }
 
     for (uint32_t i = 0; i < 4; i++) {
         char text[16];
@@ -362,4 +379,5 @@ void ElrsBackpack::sendLapTime(uint32_t currentTimeMs, uint32_t lapTimeMs[3]) {
     // Commit/draw the screen.
     uint8_t drawPayload[1] = {MSP_DISPLAYPORT_SUBCMD_DRAW_SCREEN};
     enqueueFrame(MSP_DISPLAYPORT, drawPayload, sizeof(drawPayload));
+    DEBUG("ELRSBackpack: finished queueing lap time draw commands");
 }
