@@ -22,6 +22,7 @@ void LapTimer::start() {
     DEBUG("LapTimer started\n");
     raceStartTimeMs = millis();
     state = RUNNING;
+    lapAvailableForBackpack = true;  // Redraw the OSD so it no longer shows the previous race.
     buz->beep(500);
     led->on(500);
 }
@@ -31,8 +32,10 @@ void LapTimer::stop() {
     state = STOPPED;
     lapCountWraparound = false;
     lapCount = 0;
+    lapsFinished = 0;
     rssiCount = 0;
     memset(lapTimes, 0, sizeof(lapTimes));
+    lapAvailableForBackpack = true;  // Redraw the OSD with the now empty lap history.
     buz->beep(500);
     led->on(500);
 }
@@ -110,6 +113,7 @@ void LapTimer::finishLap() {
         lapCountWraparound = true;
     }
     lapCount = (lapCount + 1) % LAPTIMER_LAP_HISTORY;
+    lapsFinished++;
     lapAvailable = true;
     lapAvailableForBackpack = true;
 }
@@ -144,6 +148,11 @@ bool LapTimer::isLapAvailable() {
 void LapTimer::getLapTimeForBackpack(uint32_t lapTimes_out[3]) {
     lapAvailableForBackpack = false;
     lastThreeLapTimeValues(lapCount, lapTimes, lapTimes_out);
+    // Like the web UI, the first lap after start is the holeshot, not a real lap.
+    // lapTimes_out[i] is lap number (lapsFinished - 1 - i), where 0 is the holeshot.
+    for (uint32_t i = 0; i < 3; i++) {
+        if (i + 1 >= lapsFinished) lapTimes_out[i] = 0;
+    }
 }
 
 bool LapTimer::isLapAvailableForBackpack() {

@@ -464,6 +464,7 @@ function doSpeak(obj) {
 }
 
 async function startRace() {
+  keepAwakeStart();  // before any await, so it still counts as part of the button click
   startRaceButton.disabled = true;
   // Calculate time taken to say starting phrase
   const baseWordsPerMinute = 150;
@@ -487,6 +488,7 @@ async function startRace() {
 }
 
 function stopRace() {
+  keepAwakeStop();
   queueSpeak('<p>Race stopped</p>');
   clearInterval(timerInterval);
   timer.innerHTML = "00:00:00s";

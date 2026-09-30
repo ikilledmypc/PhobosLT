@@ -76,7 +76,13 @@ static uint8_t mspCrc(const uint8_t *frame, uint16_t payloadSize) {
 }
 
 // Formats a time as "S.mmm" or "M:SS.mmm", space-padded to LAPTIME_OSD_WIDTH.
+// A time of 0 means no lap (yet) and is shown as "-.---".
 static void formatLapTime(uint32_t ms, char *text, size_t textSize) {
+    if (ms == 0) {
+        snprintf(text, textSize, "%-*s", LAPTIME_OSD_WIDTH, "-.---");
+        return;
+    }
+
     char timeText[16];
     uint32_t minutes = ms / 60000;
     uint32_t seconds = (ms / 1000) % 60;
@@ -202,8 +208,10 @@ void ElrsBackpack::update(uint32_t currentTimeMs) {
     if (pendingChannelValid) {
         pendingChannelValid = false;
         uint16_t frequency = elrsVtxFrequencyTable[pendingChannelIndex];
-        DEBUG("ElrsBackpack: applying VTX channel index %u -> %u MHz\n", pendingChannelIndex, frequency);
-        conf->setFrequency(frequency);
+        if (frequency != conf->getFrequency()) {
+            DEBUG("ElrsBackpack: applying VTX channel index %u -> %u MHz\n", pendingChannelIndex, frequency);
+            conf->setFrequency(frequency);
+        }
     }
 
     if (lapTimer != nullptr && lapTimer->isLapAvailableForBackpack()) {
@@ -307,8 +315,16 @@ void ElrsBackpack::sendOsdFrame(uint8_t step) {
         return;
     }
 
-    // Lines 0-2 are the last three lap times, line 3 is their total.
-    uint32_t ms = step < 3 ? osdLapTimeMs[step] : osdLapTimeMs[0] + osdLapTimeMs[1] + osdLapTimeMs[2];
+    // Lines 0-2 are the last three lap times, line 3 is their total, shown only
+    // once three real laps (excluding the holeshot) exist.
+    uint32_t ms;
+    if (step < 3) {
+        ms = osdLapTimeMs[step];
+    } else if (osdLapTimeMs[0] && osdLapTimeMs[1] && osdLapTimeMs[2]) {
+        ms = osdLapTimeMs[0] + osdLapTimeMs[1] + osdLapTimeMs[2];
+    } else {
+        ms = 0;
+    }
 
     char text[16];
     formatLapTime(ms, text, sizeof(text));
